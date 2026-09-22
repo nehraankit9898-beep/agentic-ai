@@ -46,7 +46,7 @@ class DateTimeTool(BaseTool):
 
             return {
                 "success": True,
-                "result": result,
+                "output": result,
                 "format": format,
             }
         except Exception as e:
