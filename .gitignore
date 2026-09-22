@@ -1,20 +1,10 @@
 ```
-# Dependencies
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
-env/
-venv/
-ENV/
-.venv/
-.env
-.env.local
-.env.*
-.envrc
-
-# Build artifacts
 build/
 develop-eggs/
 dist/
@@ -31,21 +21,20 @@ wheels/
 .installed.cfg
 *.egg
 
-# Testing
-.coverage
-coverage/
-htmlcov/
-.nosetests
-.unit_test_results/
+# Environment
+.env
+.env.local
+*.env.*
 
-# IDE
-.vscode/
-.idea/
+# Temporary files
+*.tmp
 *.swp
 *.swo
-*~
 
-# OS
-.DS_Store
-Thumbs.db
+# Logs
+*.log
+
+# Editors
+.vscode/
+.idea/
 ```
