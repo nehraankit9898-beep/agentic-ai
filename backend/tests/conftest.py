@@ -7,6 +7,11 @@ import pytest
 # Ensure `backend/` is on sys.path so `app.*` imports work from any cwd.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# Keep tests hermetic: no .env file interference, web access off by default.
+os.environ.setdefault("ALLOW_WEB_ACCESS", "false")
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("WORKSPACE_ROOT", os.path.join(os.path.dirname(__file__), "_ws"))
+
 
 @pytest.fixture
 def tool_manager():

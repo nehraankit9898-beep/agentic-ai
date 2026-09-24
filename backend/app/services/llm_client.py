@@ -8,8 +8,8 @@ class LLMClient:
     """Client for interacting with LLM providers (Ollama by default)."""
 
     def __init__(self):
-        self.base_url = settings.llm_base_url
-        self.model = settings.llm_model
+        self.base_url = settings.effective_ollama_url
+        self.model = settings.effective_ollama_model
         self.provider = settings.llm_provider
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -126,7 +126,26 @@ Available tools:
         except Exception:
             return False
 
-    def close(self):
-        """Close the HTTP client."""
+    async def aclose(self):
+        """Close the underlying async HTTP client (awaitable)."""
         if self._client and not self._client.is_closed:
-            self._client.close()
+            await self._client.aclose()
+
+    def close(self):
+        """Synchronous best-effort close (kept for backward compatibility).
+
+        Prefer ``await aclose()``; calling this from within a running event
+        loop schedules the proper async close.
+        """
+        if self._client and not self._client.is_closed:
+            import asyncio
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(self._client.aclose())
+            else:
+                # No loop running: safe to drive the coroutine to completion.
+                asyncio.run(self._client.aclose())
