@@ -111,6 +111,12 @@ class AgentController:
         if confirmed and state.pending_tool_calls:
             pending = state.pending_tool_calls
             state.pending_tool_calls = []
+            # Record the user's approval in history before executing.
+            from datetime import datetime as _dt, timezone as _tz
+            state.messages.append(
+                Message(role=MessageRole.USER, content=message, timestamp=_dt.now(_tz.utc))
+            )
+            self._persist(self.memory.append_message(session_id, "user", message))
             return await self._execute_and_respond(
                 message, state, pending, skip_confirmation=True
             )

@@ -1,6 +1,6 @@
-# Python bytecode and caches
+# Python compiled files
 __pycache__/
 *.pyc
 
-# Logs
-*.log
+# SQLite database artifacts
+*.db-journal
