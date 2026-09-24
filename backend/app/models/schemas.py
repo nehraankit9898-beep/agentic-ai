@@ -28,7 +28,8 @@ class ConversationState(BaseModel):
     session_id: str
     messages: list[Message] = []
     current_task: Optional[str] = None
-    task_status: str = "idle"  # idle, planning, executing, completed, failed
+    task_status: str = "idle"  # idle, planning, executing, completed, failed, awaiting_confirmation
+    pending_tool_calls: list["ToolCall"] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
