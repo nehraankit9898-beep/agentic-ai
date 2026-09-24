@@ -48,7 +48,7 @@ class CalculatorTool(BaseTool):
 
             return {
                 "success": True,
-                "result": result,
+                "output": result,
                 "expression": expression,
             }
         except ZeroDivisionError:

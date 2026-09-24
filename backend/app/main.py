@@ -80,3 +80,16 @@ async def list_tools():
         raise HTTPException(status_code=503, detail="Tool manager not initialized")
 
     return {"tools": tool_manager.list_tools()}
+
+
+# Alias endpoints under /api so the frontend can use a single proxied prefix
+@app.get("/api/tools")
+async def list_tools_api():
+    """List available tools (API-prefixed alias)."""
+    return await list_tools()
+
+
+@app.get("/api/health")
+async def health_check_api():
+    """Health check (API-prefixed alias)."""
+    return await health_check()
