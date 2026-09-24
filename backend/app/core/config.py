@@ -27,10 +27,18 @@ class Settings(BaseSettings):
         "file_writer",
         "directory_lister",
         "date_time",
+        "python_executor",
+        "web_search",
     ]
 
     # Sandbox settings
     python_sandbox: bool = True
+
+    # Web search (Phase 7) - external access disabled by default for safety
+    allow_web_access: bool = False
+    web_search_provider: str = "duckduckgo"  # duckduckgo | serper
+    serper_api_key: str = ""
+    web_timeout_seconds: int = 10
 
     class Config:
         env_file = ".env"

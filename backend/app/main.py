@@ -11,22 +11,33 @@ from .api.chat import router as chat_router
 # Global instances
 llm_client: LLMClient | None = None
 tool_manager: ToolManager | None = None
+agent_controller: "AgentController | None" = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
-    global llm_client, tool_manager
+    global llm_client, tool_manager, agent_controller
 
     # Startup
     llm_client = LLMClient()
     tool_manager = ToolManager()
+
+    from .agent.controller import AgentController
+    agent_controller = AgentController(llm_client, tool_manager)
 
     yield
 
     # Shutdown
     if llm_client:
         llm_client.close()
+
+
+def get_agent():
+    """Return the shared AgentController (singleton keeps session state)."""
+    if agent_controller is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    return agent_controller
 
 
 app = FastAPI(
@@ -80,3 +91,16 @@ async def list_tools():
         raise HTTPException(status_code=503, detail="Tool manager not initialized")
 
     return {"tools": tool_manager.list_tools()}
+
+
+# Alias endpoints under /api so the frontend can use a single proxied prefix
+@app.get("/api/tools")
+async def list_tools_api():
+    """List available tools (API-prefixed alias)."""
+    return await list_tools()
+
+
+@app.get("/api/health")
+async def health_check_api():
+    """Health check (API-prefixed alias)."""
+    return await health_check()

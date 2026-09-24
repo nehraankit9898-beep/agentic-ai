@@ -17,12 +17,16 @@ class ToolManager:
         from .file_reader import FileReaderTool
         from .file_writer import FileWriterTool
         from .directory_lister import DirectoryListerTool
+        from .python_executor import PythonExecutorTool
+        from .web_search import WebSearchTool
 
         self.register_tool(CalculatorTool())
         self.register_tool(DateTimeTool())
         self.register_tool(FileReaderTool())
         self.register_tool(FileWriterTool())
         self.register_tool(DirectoryListerTool())
+        self.register_tool(PythonExecutorTool())
+        self.register_tool(WebSearchTool())
 
     def register_tool(self, tool: BaseTool) -> None:
         """Register a tool for use."""

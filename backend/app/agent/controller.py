@@ -32,7 +32,7 @@ class AgentController:
         return self.conversation_states[session_id]
 
     async def process_request(
-        self, message: str, session_id: str
+        self, message: str, session_id: str, confirmed: bool = False
     ) -> AgentResponse:
         """
         Process a user request through the agent workflow.
@@ -40,11 +40,20 @@ class AgentController:
         Args:
             message: User's input message
             session_id: Session identifier for conversation memory
+            confirmed: Whether pending tool calls were explicitly approved
 
         Returns:
             AgentResponse with message, tool calls, and status
         """
         state = self.get_or_create_state(session_id)
+
+        # --- Confirmation flow: resume previously paused tool calls ---
+        if confirmed and state.pending_tool_calls:
+            pending = state.pending_tool_calls
+            state.pending_tool_calls = []
+            return await self._execute_and_respond(
+                message, state, pending, skip_confirmation=True
+            )
 
         # Add user message to history
         from datetime import datetime
@@ -75,44 +84,33 @@ class AgentController:
                 if inferred_tool_call:
                     tool_calls = [inferred_tool_call]
             
-            results = []
-
-            for tool_call in tool_calls:
-                state.task_status = "executing"
-                result = await self._execute_tool_call(tool_call)
-                results.append(result)
-
-                # Add tool result to conversation history
-                from datetime import datetime
-                state.messages.append(
-                    Message(
-                        role=MessageRole.TOOL,
-                        content=str(result.output),
-                        timestamp=datetime.utcnow(),
-                        metadata={"tool_name": tool_call.tool_name},
-                    )
+            # Safety gate: tools that require confirmation pause the run
+            needs_confirm = [
+                tc for tc in tool_calls
+                if self.tool_manager.requires_confirmation(tc.tool_name)
+            ]
+            if needs_confirm:
+                state.pending_tool_calls = tool_calls
+                state.current_task = message
+                state.task_status = "awaiting_confirmation"
+                names = ", ".join(sorted({tc.tool_name for tc in needs_confirm}))
+                preview = "; ".join(
+                    f"{tc.tool_name}({tc.arguments})" for tc in tool_calls
+                )[:400]
+                return AgentResponse(
+                    message=(
+                        f"I need your confirmation before running: {names}.\n\n"
+                        f"Planned calls: {preview}\n\n"
+                        "Send confirm=true to /api/chat/confirm (or click Approve "
+                        "in the dashboard) to proceed."
+                    ),
+                    tool_calls=tool_calls,
+                    task_plan=plan,
+                    requires_confirmation=True,
+                    status="needs_confirmation",
                 )
 
-            # Step 4: Check & Recover - Handle errors
-            failed_results = [r for r in results if not r.success]
-            if failed_results:
-                recovery_response = await self._handle_errors(
-                    message, failed_results
-                )
-                final_message = recovery_response
-                status = "error" if failed_results else "success"
-            elif results:
-                # Generate final response based on tool results
-                final_message = await self._generate_final_response(
-                    message, results, state
-                )
-                status = "success"
-            else:
-                # Tools needed but none executed
-                final_message = "I detected that you might need a tool, but I couldn't determine which one. Could you be more specific?"
-                status = "success"
-
-            state.task_status = "completed"
+            return await self._execute_and_respond(message, state, tool_calls, plan)
         else:
             # Simple chat - no tools needed
             state.task_status = "idle"
@@ -128,6 +126,60 @@ class AgentController:
         )
 
         # Keep only last 20 messages for short-term memory
+        if len(state.messages) > 20:
+            state.messages = state.messages[-20:]
+
+        return AgentResponse(
+            message=final_message,
+            tool_calls=tool_calls,
+            task_plan=plan,
+            requires_confirmation=False,
+            status=status,
+        )
+
+    async def _execute_and_respond(
+        self,
+        message: str,
+        state: ConversationState,
+        tool_calls: list[ToolCall],
+        plan: TaskPlan | None = None,
+        skip_confirmation: bool = False,
+    ) -> AgentResponse:
+        """Execute a batch of tool calls, recover from errors, respond."""
+        from datetime import datetime
+
+        results = []
+        for tool_call in tool_calls:
+            state.task_status = "executing"
+            result = await self._execute_tool_call(tool_call)
+            results.append(result)
+
+            state.messages.append(
+                Message(
+                    role=MessageRole.TOOL,
+                    content=str(result.output if result.success else result.error),
+                    timestamp=datetime.utcnow(),
+                    metadata={"tool_name": tool_call.tool_name},
+                )
+            )
+
+        failed_results = [r for r in results if not r.success]
+        if failed_results:
+            final_message = await self._handle_errors(message, failed_results)
+            status = "error"
+        elif results:
+            final_message = await self._generate_final_response(
+                message, results, state
+            )
+            status = "success"
+        else:
+            final_message = "I detected that you might need a tool, but I couldn't determine which one. Could you be more specific?"
+            status = "success"
+
+        state.task_status = "completed"
+        state.messages.append(
+            Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.utcnow())
+        )
         if len(state.messages) > 20:
             state.messages = state.messages[-20:]
 
@@ -287,6 +339,33 @@ For calculations, file operations, date/time queries, or data lookups, set needs
                     arguments={"file_path": file_path, "content": content or " "}
                 )
         
+        # Python execution inference
+        import_block = "```python" in message_lower or "```py" in message_lower
+        code_kw = any(w in message_lower for w in ["run python", "execute python", "python code", "run this code", "exec code"])
+        has_code_tokens = any(t in message for t in ["def ", "print(", "for ", "while ", "= "])
+        if import_block or (code_kw and has_code_tokens):
+            code = message
+            if import_block:
+                parts = re.split(r"```(?:python|py)?", message)
+                candidates = [p.strip() for p in parts if p.strip()]
+                code = max(candidates, key=len) if candidates else message
+            return ToolCall(tool_name="python_executor", arguments={"code": code})
+
+        # Web search inference
+        lower = message_lower
+        if any(v in lower for v in ["search", "look up", "lookup", "find online", "google"]):
+            query = message
+            for v in ["search the web for", "search for", "search", "look up", "lookup", "find online", "google"]:
+                query = re.sub(re.escape(v), "", query, flags=re.IGNORECASE)
+            query = query.strip(" ?.:")
+            if query:
+                return ToolCall(tool_name="web_search", arguments={"query": query})
+
+        research_words = ["who is", "what is", "what are", "when was", "where is", "how does", "why is"]
+        current_markers = ["news", "current", "latest", "today", "weather", "price of", "version"]
+        if any(lower.startswith(r) for r in research_words) and any(w in lower for w in current_markers):
+            return ToolCall(tool_name="web_search", arguments={"query": message.strip("?")})
+
         return None
 
     def _simple_understanding(self, message: str) -> dict:
