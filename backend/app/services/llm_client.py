@@ -8,8 +8,8 @@ class LLMClient:
     """Client for interacting with LLM providers (Ollama by default)."""
 
     def __init__(self):
-        self.base_url = settings.llm_base_url
-        self.model = settings.llm_model
+        self.base_url = settings.effective_ollama_url
+        self.model = settings.effective_ollama_model
         self.provider = settings.llm_provider
         self._client: Optional[httpx.AsyncClient] = None
 

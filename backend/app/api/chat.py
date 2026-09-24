@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
 
 from ..models.schemas import AgentResponse
+from .errors import AppError
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -17,6 +18,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """Response model for chat endpoint."""
 
+    success: bool = True
     message: str
     session_id: str
     status: str = "success"
@@ -26,7 +28,7 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, http_request: Request):
     """
     Chat endpoint with agent workflow - Phase 2 implementation.
 
@@ -56,9 +58,11 @@ async def chat(request: ChatRequest):
         )
 
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=f"LLM service error: {str(e)}")
+        raise AppError(code="LLM_SERVICE_ERROR", message=f"LLM service error: {e}", status_code=503)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        raise AppError(code="INTERNAL_ERROR", message=f"Internal error: {e}", status_code=500)
 
 
 class ConfirmRequest(BaseModel):
@@ -75,7 +79,7 @@ async def confirm_pending(request: ConfirmRequest):
     agent = get_agent()
     state = agent.get_or_create_state(request.session_id)
     if not state.pending_tool_calls:
-        raise HTTPException(status_code=409, detail="No pending tool calls to confirm")
+        raise AppError(code="NO_PENDING_TOOL_CALLS", message="No pending tool calls to confirm", status_code=409)
 
     original_message = state.current_task or "confirmed task"
     try:

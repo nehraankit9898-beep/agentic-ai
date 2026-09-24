@@ -1,7 +1,25 @@
-# Compiled and build artifacts
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Dependencies
+# Virtual environments
 venv/
 .venv/
+env/
+
+# Environment variables (keep .env.example tracked)
+.env
+.env.local
+.env.*.local
+
+# Build artifacts and dependencies
+dist/
+build/
+node_modules/
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
