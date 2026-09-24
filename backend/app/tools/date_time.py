@@ -30,7 +30,7 @@ class DateTimeTool(BaseTool):
         Returns:
             Dict with date/time information
         """
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         try:
             now = datetime.now()

@@ -56,6 +56,15 @@ class ToolManager:
         Returns:
             Tool execution result
         """
+        # Defense-in-depth: re-check the allowlist at execution time so a
+        # tool can never run if it was removed from (or never added to)
+        # settings.allowed_tools, even if it somehow ended up registered.
+        if not self.is_tool_allowed(tool_name):
+            return {
+                "success": False,
+                "error": f"Tool not allowed by configuration: {tool_name}",
+            }
+
         tool = self.get_tool(tool_name)
 
         if tool is None:

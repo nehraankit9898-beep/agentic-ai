@@ -56,11 +56,11 @@ class AgentController:
             )
 
         # Add user message to history
-        from datetime import datetime
+        from datetime import datetime, timezone
         state.messages.append(
-            Message(role=MessageRole.USER, content=message, timestamp=datetime.utcnow())
+            Message(role=MessageRole.USER, content=message, timestamp=datetime.now(timezone.utc))
         )
-        state.updated_at = datetime.utcnow()
+        state.updated_at = datetime.now(timezone.utc)
 
         # Step 1: Understand - Determine if tools are needed
         understanding = await self._understand_request(message, state)
@@ -120,9 +120,9 @@ class AgentController:
             status = "success"
 
         # Add assistant response to history
-        from datetime import datetime
+        from datetime import datetime, timezone
         state.messages.append(
-            Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.utcnow())
+            Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.now(timezone.utc))
         )
 
         # Keep only last 20 messages for short-term memory
@@ -146,7 +146,7 @@ class AgentController:
         skip_confirmation: bool = False,
     ) -> AgentResponse:
         """Execute a batch of tool calls, recover from errors, respond."""
-        from datetime import datetime
+        from datetime import datetime, timezone
 
         results = []
         for tool_call in tool_calls:
@@ -158,7 +158,7 @@ class AgentController:
                 Message(
                     role=MessageRole.TOOL,
                     content=str(result.output if result.success else result.error),
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     metadata={"tool_name": tool_call.tool_name},
                 )
             )
@@ -178,7 +178,7 @@ class AgentController:
 
         state.task_status = "completed"
         state.messages.append(
-            Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.utcnow())
+            Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.now(timezone.utc))
         )
         if len(state.messages) > 20:
             state.messages = state.messages[-20:]
