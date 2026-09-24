@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -18,7 +18,7 @@ class Message(BaseModel):
 
     role: MessageRole
     content: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Optional[dict[str, Any]] = None
 
 
@@ -30,8 +30,8 @@ class ConversationState(BaseModel):
     current_task: Optional[str] = None
     task_status: str = "idle"  # idle, planning, executing, completed, failed, awaiting_confirmation
     pending_tool_calls: list["ToolCall"] = []
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ToolCall(BaseModel):
