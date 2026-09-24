@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     max_tool_runtime: int = Field(default=30, ge=1, le=600)   # seconds per tool call
     max_agent_steps: int = Field(default=10, ge=1, le=50)     # runaway-agent guard
 
+    # Cloud LLM fallback (OpenAI-compatible API; keys stay server-side only)
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
+
+    # Conversation memory persistence (SQLite via aiosqlite)
+    memory_enabled: bool = True
+
     # Tool Permissions
     allowed_tools: list[str] = [
         "calculator",
@@ -58,6 +66,9 @@ class Settings(BaseSettings):
         "date_time",
         "python_executor",
         "web_search",
+        "http_fetcher",
+        "text_processor",
+        "memory_store",
     ]
 
     # Sandbox settings

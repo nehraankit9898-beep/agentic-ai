@@ -8,6 +8,7 @@ from ..models.schemas import (
     TaskPlan,
     AgentResponse,
 )
+from ..core.config import settings
 from ..services.llm_client import LLMClient
 from ..tools.manager import ToolManager
 
@@ -15,13 +16,43 @@ from ..tools.manager import ToolManager
 class AgentController:
     """
     Main agent controller that orchestrates the workflow:
-    Understand → Plan → Execute → Check → Recover → Respond
+    Understand → Plan → Execute (ReAct loop) → Check → Recover → Respond
+
+    Advanced features:
+    - Native tool-calling ReAct loop with parallel tool execution and a
+      MAX_AGENT_STEPS runaway guard (falls back to heuristic parsing when
+      the provider/model lacks native function calling).
+    - Persistent long-term memory: session transcripts + key/value facts
+      are stored in SQLite via app.services.memory.
+    - Cloud fallback: if the primary LLM errors out, an OpenAI-compatible
+      provider is used when configured (keys stay server-side).
     """
 
     def __init__(self, llm_client: LLMClient, tool_manager: ToolManager):
         self.llm_client = llm_client
         self.tool_manager = tool_manager
         self.conversation_states: dict[str, ConversationState] = {}
+        self._native_tool_calls = True  # flips off if provider rejects tools
+        self._restored_sessions: set[str] = set()
+
+    @property
+    def memory(self):
+        from ..services.memory import memory
+
+        return memory
+
+    def _persist(self, coro) -> None:
+        """Schedule a best-effort async memory write without blocking."""
+        import asyncio
+
+        if not settings.memory_enabled:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(coro)
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     def get_or_create_state(self, session_id: str) -> ConversationState:
         """Get existing conversation state or create new one."""
@@ -30,6 +61,35 @@ class AgentController:
                 session_id=session_id
             )
         return self.conversation_states[session_id]
+
+    async def ensure_history_loaded(self, session_id: str) -> ConversationState:
+        """Lazily restore a session's transcript from SQLite after a restart."""
+        state = self.get_or_create_state(session_id)
+        if (
+            settings.memory_enabled
+            and session_id not in self._restored_sessions
+            and not state.messages
+        ):
+            self._restored_sessions.add(session_id)
+            try:
+                rows = await self.memory.load_session(session_id, limit=20)
+                for row in rows:
+                    try:
+                        role = MessageRole(row["role"])
+                    except ValueError:
+                        continue
+                    if role == MessageRole.SYSTEM:
+                        continue
+                    state.messages.append(
+                        Message(
+                            role=role,
+                            content=row["content"],
+                            metadata=row.get("metadata") or None,
+                        )
+                    )
+            except Exception:  # noqa: BLE001 - memory is best-effort
+                pass
+        return state
 
     async def process_request(
         self, message: str, session_id: str, confirmed: bool = False
@@ -45,7 +105,7 @@ class AgentController:
         Returns:
             AgentResponse with message, tool calls, and status
         """
-        state = self.get_or_create_state(session_id)
+        state = await self.ensure_history_loaded(session_id)
 
         # --- Confirmation flow: resume previously paused tool calls ---
         if confirmed and state.pending_tool_calls:
@@ -55,12 +115,13 @@ class AgentController:
                 message, state, pending, skip_confirmation=True
             )
 
-        # Add user message to history
+        # Add user message to history (in-memory + persistent store)
         from datetime import datetime, timezone
         state.messages.append(
             Message(role=MessageRole.USER, content=message, timestamp=datetime.now(timezone.utc))
         )
         state.updated_at = datetime.now(timezone.utc)
+        self._persist(self.memory.append_message(session_id, "user", message))
 
         # Step 1: Understand - Determine if tools are needed
         understanding = await self._understand_request(message, state)
@@ -124,6 +185,7 @@ class AgentController:
         state.messages.append(
             Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.now(timezone.utc))
         )
+        self._persist(self.memory.append_message(state.session_id, "assistant", final_message))
 
         # Keep only last 20 messages for short-term memory
         if len(state.messages) > 20:
@@ -145,15 +207,16 @@ class AgentController:
         plan: TaskPlan | None = None,
         skip_confirmation: bool = False,
     ) -> AgentResponse:
-        """Execute a batch of tool calls, recover from errors, respond."""
+        """Execute a batch of tool calls in parallel, recover from errors, respond."""
+        import asyncio
         from datetime import datetime, timezone
 
-        results = []
-        for tool_call in tool_calls:
-            state.task_status = "executing"
-            result = await self._execute_tool_call(tool_call)
-            results.append(result)
+        state.task_status = "executing"
+        results = await asyncio.gather(
+            *(self._execute_tool_call(tc) for tc in tool_calls)
+        )
 
+        for tool_call, result in zip(tool_calls, results):
             state.messages.append(
                 Message(
                     role=MessageRole.TOOL,
@@ -180,6 +243,7 @@ class AgentController:
         state.messages.append(
             Message(role=MessageRole.ASSISTANT, content=final_message, timestamp=datetime.now(timezone.utc))
         )
+        self._persist(self.memory.append_message(state.session_id, "assistant", final_message))
         if len(state.messages) > 20:
             state.messages = state.messages[-20:]
 
@@ -191,6 +255,24 @@ class AgentController:
             status=status,
         )
 
+    async def _chat_llm(self, messages: list[dict]) -> str:
+        """Call the primary LLM; transparently fall back to a configured
+        OpenAI-compatible cloud provider if the local model errors out."""
+        try:
+            return await self.llm_client.chat(messages)
+        except Exception as primary_err:  # noqa: BLE001
+            from ..services.llm_client import OpenAICompatClient
+
+            if settings.openai_api_key and not isinstance(
+                self.llm_client, OpenAICompatClient
+            ):
+                try:
+                    fallback = OpenAICompatClient()
+                    return await fallback.chat(messages)
+                except Exception:  # noqa: BLE001 - report the original error
+                    pass
+            raise primary_err
+
     async def _understand_request(
         self, message: str, state: ConversationState
     ) -> dict:
@@ -199,6 +281,11 @@ class AgentController:
         - Whether tools are needed
         - Which tools might be required
         - If it's a complex multi-step task
+
+        Uses JSON-prompt parsing + heuristic inference. Native function
+        calling (when the provider supports it) is handled by
+        run_react_stream(); this path stays compatible with plain chat-only
+        LLM clients and test stubs.
         """
         tool_definitions = self.tool_manager.list_tools()
 
@@ -234,7 +321,7 @@ For calculations, file operations, date/time queries, or data lookups, set needs
             messages.append({"role": msg.role.value, "content": msg.content})
 
         try:
-            response = await self.llm_client.chat(messages)
+            response = await self._chat_llm(messages)
             # Parse the response to extract JSON
             import json
 
@@ -482,7 +569,7 @@ Respond in JSON format:
         ]
 
         try:
-            response = await self.llm_client.chat(messages)
+            response = await self._chat_llm(messages)
             import json
 
             start_idx = response.find("[")
@@ -533,7 +620,7 @@ Be honest about what went wrong. Do not pretend the task succeeded.
         ]
 
         try:
-            response = await self.llm_client.chat(messages)
+            response = await self._chat_llm(messages)
             return response
         except Exception:
             return f"I encountered an error while processing your request: {error_details}"
@@ -562,7 +649,7 @@ Summarize the findings naturally.
         ]
 
         try:
-            response = await self.llm_client.chat(messages)
+            response = await self._chat_llm(messages)
             return response
         except Exception:
             # Fallback: just return the raw results

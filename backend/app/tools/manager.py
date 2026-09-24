@@ -20,6 +20,9 @@ class ToolManager:
         from .directory_lister import DirectoryListerTool
         from .python_executor import PythonExecutorTool
         from .web_search import WebSearchTool
+        from .http_fetcher import HttpFetcherTool
+        from .text_processor import TextProcessorTool
+        from .memory_store import MemoryStoreTool
 
         for tool in (
             CalculatorTool(),
@@ -29,6 +32,9 @@ class ToolManager:
             DirectoryListerTool(),
             PythonExecutorTool(),
             WebSearchTool(),
+            HttpFetcherTool(),
+            TextProcessorTool(),
+            MemoryStoreTool(),
         ):
             self.register_tool(tool)
 
@@ -69,7 +75,10 @@ class ToolManager:
             **kwargs: Arguments to pass to the tool
 
         Returns:
-            Tool execution result
+            Tool execution result. For successful runs the payload is also
+            normalized with an "output" key (a compact text rendering of the
+            result) so downstream consumers — including the LLM's final
+            response step — always have something meaningful to read.
         """
         # Defense-in-depth: re-check the allowlist at execution time so a
         # tool can never run if it was removed from (or never added to)
@@ -121,6 +130,8 @@ class ToolManager:
             if isinstance(result, dict) and not result.get("success", True):
                 status = "error"
                 error_text = str(result.get("error", ""))[:500]
+            if isinstance(result, dict) and result.get("success", True) and "output" not in result:
+                result = {**result, "output": self._render_output(tool_name, result)}
             return result
         except asyncio.TimeoutError:
             status = "timeout"
@@ -142,6 +153,18 @@ class ToolManager:
                 status=status,
                 error=error_text,
             )
+
+    @staticmethod
+    def _render_output(tool_name: str, result: dict) -> str:
+        """Compact text rendering of a successful tool payload (for LLM context)."""
+        import json as _json
+
+        payload = {k: v for k, v in result.items() if k != "success"}
+        try:
+            text = _json.dumps(payload, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(payload)
+        return text[:4000]
 
     def requires_confirmation(self, tool_name: str) -> bool:
         """Check if a tool requires user confirmation."""
