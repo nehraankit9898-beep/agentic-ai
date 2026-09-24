@@ -1,9 +1,6 @@
-# Python compiled files and caches
+# Python bytecode and caches
 __pycache__/
 *.pyc
-*.pyo
 
-# Environment and secrets
-.env
-.env.local
-.env.*.local
+# Logs
+*.log
