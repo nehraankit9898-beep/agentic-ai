@@ -34,7 +34,8 @@ class StubLLM:
     async def check_health(self):
         return True
 
-    def close(self):
+    async def aclose(self):
+        pass
         pass
 
 
