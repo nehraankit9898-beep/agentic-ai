@@ -1,6 +1,8 @@
 from .base import BaseTool
-import os
 from pathlib import Path
+
+from ..core.config import settings
+from ..core.security import safe_join, SecurityError
 
 
 class DirectoryListerTool(BaseTool):
@@ -36,18 +38,13 @@ class DirectoryListerTool(BaseTool):
             Dict with directory listing
         """
         try:
-            # Security: Prevent path traversal attacks
-            base_dir = Path(os.getcwd())
-            target_path = Path(path).resolve()
-
-            # Ensure the path is within allowed directory
+            # Security: canonical-path validation keeps listings inside the
+            # configured WORKSPACE_ROOT.
+            base_dir = settings.workspace_path
             try:
-                target_path.relative_to(base_dir)
-            except ValueError:
-                return {
-                    "success": False,
-                    "error": f"Access denied: Path must be within {base_dir}",
-                }
+                target_path = safe_join(base_dir, path)
+            except SecurityError as e:
+                return {"success": False, "error": f"Access denied: {e.message}"}
 
             if not target_path.exists():
                 return {

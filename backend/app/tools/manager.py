@@ -1,4 +1,5 @@
 from typing import Optional
+
 from .base import BaseTool
 from ..core.config import settings
 
@@ -20,17 +21,20 @@ class ToolManager:
         from .python_executor import PythonExecutorTool
         from .web_search import WebSearchTool
 
-        self.register_tool(CalculatorTool())
-        self.register_tool(DateTimeTool())
-        self.register_tool(FileReaderTool())
-        self.register_tool(FileWriterTool())
-        self.register_tool(DirectoryListerTool())
-        self.register_tool(PythonExecutorTool())
-        self.register_tool(WebSearchTool())
+        for tool in (
+            CalculatorTool(),
+            DateTimeTool(),
+            FileReaderTool(),
+            FileWriterTool(),
+            DirectoryListerTool(),
+            PythonExecutorTool(),
+            WebSearchTool(),
+        ):
+            self.register_tool(tool)
 
     def register_tool(self, tool: BaseTool) -> None:
-        """Register a tool for use."""
-        if tool.name in settings.allowed_tools or settings.allowed_tools == ["*"]:
+        """Register a tool for use (only if allowed by configuration)."""
+        if self.is_tool_allowed(tool.name):
             self._tools[tool.name] = tool
 
     def get_tool(self, name: str) -> Optional[BaseTool]:
@@ -42,8 +46,19 @@ class ToolManager:
         return [tool.get_definition() for tool in self._tools.values()]
 
     def is_tool_allowed(self, tool_name: str) -> bool:
-        """Check if a tool is allowed by configuration."""
-        return tool_name in settings.allowed_tools or settings.allowed_tools == ["*"]
+        """Check if a tool is allowed by configuration.
+
+        Supports both list-style (ALLOWED_TOOLS=a,b,c) and wildcard "*" values.
+        """
+        allowed = settings.allowed_tools
+        if allowed == ["*"] or allowed == "*":
+            return True
+        # Normalize in case the value came through as a single comma string.
+        if isinstance(allowed, str):
+            names = [n.strip() for n in allowed.split(",")]
+        else:
+            names = list(allowed)
+        return tool_name in names
 
     async def execute_tool(self, tool_name: str, **kwargs) -> dict:
         """
@@ -74,21 +89,59 @@ class ToolManager:
             }
 
         # Validate input
-        is_valid, error_msg = tool.validate_input(**kwargs)
+        try:
+            is_valid, error_msg = tool.validate_input(**kwargs)
+        except TypeError as e:
+            # LLM produced malformed call signature (missing/unexpected args)
+            return {
+                "success": False,
+                "error": f"Invalid arguments for tool '{tool_name}': {e}",
+            }
         if not is_valid:
             return {
                 "success": False,
                 "error": error_msg or "Invalid input",
             }
 
+        import asyncio
+        import time
+
+        from ..core.logging import get_logger, log_event
+
+        logger = get_logger("app.tools")
+        started = time.monotonic()
+        status = "ok"
+        error_text: str | None = None
         try:
-            result = await tool.execute(**kwargs)
+            # Enforce MAX_TOOL_RUNTIME per tool invocation so a hanging tool
+            # cannot block the event loop / agent run forever.
+            result = await asyncio.wait_for(
+                tool.execute(**kwargs), timeout=settings.max_tool_runtime
+            )
+            if isinstance(result, dict) and not result.get("success", True):
+                status = "error"
+                error_text = str(result.get("error", ""))[:500]
             return result
+        except asyncio.TimeoutError:
+            status = "timeout"
+            error_text = f"Tool '{tool_name}' exceeded {settings.max_tool_runtime}s runtime limit"
+            return {"success": False, "error": error_text}
         except Exception as e:
+            status = "error"
+            error_text = str(e)[:500]
             return {
                 "success": False,
                 "error": f"Tool execution failed: {str(e)}",
             }
+        finally:
+            log_event(
+                logger,
+                "tool_call",
+                tool_name=tool_name,
+                duration_ms=round((time.monotonic() - started) * 1000, 2),
+                status=status,
+                error=error_text,
+            )
 
     def requires_confirmation(self, tool_name: str) -> bool:
         """Check if a tool requires user confirmation."""

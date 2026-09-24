@@ -1,6 +1,8 @@
 from .base import BaseTool
-import os
 from pathlib import Path
+
+from ..core.config import settings
+from ..core.security import safe_join, SecurityError
 
 
 class FileReaderTool(BaseTool):
@@ -37,18 +39,14 @@ class FileReaderTool(BaseTool):
             Dict with file contents or error
         """
         try:
-            # Security: Prevent path traversal attacks
-            base_dir = Path(os.getcwd())
-            target_path = Path(file_path).resolve()
-
-            # Ensure the path is within allowed directory
+            # Security: canonical-path validation keeps access inside the
+            # configured WORKSPACE_ROOT (blocks ../ traversal, absolute
+            # escapes and symlink escapes).
+            base_dir = settings.workspace_path
             try:
-                target_path.relative_to(base_dir)
-            except ValueError:
-                return {
-                    "success": False,
-                    "error": f"Access denied: File must be within {base_dir}",
-                }
+                target_path = safe_join(base_dir, file_path)
+            except SecurityError as e:
+                return {"success": False, "error": f"Access denied: {e.message}"}
 
             if not target_path.exists():
                 return {

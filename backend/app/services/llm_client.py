@@ -126,7 +126,26 @@ Available tools:
         except Exception:
             return False
 
-    def close(self):
-        """Close the HTTP client."""
+    async def aclose(self):
+        """Close the underlying async HTTP client (awaitable)."""
         if self._client and not self._client.is_closed:
-            self._client.close()
+            await self._client.aclose()
+
+    def close(self):
+        """Synchronous best-effort close (kept for backward compatibility).
+
+        Prefer ``await aclose()``; calling this from within a running event
+        loop schedules the proper async close.
+        """
+        if self._client and not self._client.is_closed:
+            import asyncio
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(self._client.aclose())
+            else:
+                # No loop running: safe to drive the coroutine to completion.
+                asyncio.run(self._client.aclose())

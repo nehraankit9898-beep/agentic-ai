@@ -3,9 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .core.config import settings
+from .core.logging import configure_logging
 from .services.llm_client import LLMClient
 from .tools.manager import ToolManager
 from .api.chat import router as chat_router
+from .api.errors import register_error_handlers
 
 
 # Global instances
@@ -20,6 +22,8 @@ async def lifespan(app: FastAPI):
     global llm_client, tool_manager, agent_controller
 
     # Startup
+    configure_logging(settings.log_level)
+    app.state.debug = settings.debug
     llm_client = LLMClient()
     tool_manager = ToolManager()
 
@@ -30,7 +34,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     if llm_client:
-        llm_client.close()
+        await llm_client.aclose()
 
 
 def get_agent():
@@ -46,6 +50,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Standard error envelope + request-id middleware (must be registered before routers)
+register_error_handlers(app)
 
 # CORS middleware for frontend
 app.add_middleware(

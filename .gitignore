@@ -1,25 +1,2 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Environment variables (keep .env.example tracked)
-.env
-.env.local
-.env.*.local
-
-# Build artifacts and dependencies
-dist/
-build/
-node_modules/
-
-# IDE/Editor files
-.vscode/
-.idea/
-*.swp
-*.swo
+# Logs and temp files
+*.log

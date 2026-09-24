@@ -2,9 +2,6 @@ import ast
 import asyncio
 import json
 import sys
-from io import StringIO
-from contextlib import redirect_stdout, redirect_stderr
-
 from .base import BaseTool
 
 
@@ -19,6 +16,8 @@ ALLOWED_MODULES = {
 BLOCKED_BUILTINS = {
     "__import__", "exec", "eval", "compile", "open", "input", "breakpoint",
     "exit", "quit", "globals", "locals", "vars", "dir", "help", "memoryview",
+    "getattr", "setattr", "delattr", "super", "object", "type",
+    "classmethod", "staticmethod", "property", "wrapped",
 }
 
 # AST nodes that indicate dangerous capability usage.
@@ -91,9 +90,16 @@ class PythonExecutorTool(BaseTool):
                 root = (node.module or "").split(".")[0]
                 if root not in ALLOWED_MODULES:
                     return False, f"Import from module '{node.module}' is not allowed"
+            # Direct calls: eval(...), getattr(...), ...
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 if node.func.id in BLOCKED_BUILTINS:
                     return False, f"Use of '{node.func.id}()' is not allowed in the sandbox"
+            # Indirect references: x = eval; x(...); map(eval, ...) etc.
+            # Any *load* of a blocked builtin name outside a direct call is
+            # rejected so blocked builtins cannot be aliased or passed around.
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id in BLOCKED_BUILTINS:
+                    return False, f"Reference to '{node.id}' is not allowed in the sandbox"
         return True, None
 
     async def execute(self, code: str) -> dict:
@@ -108,6 +114,7 @@ class PythonExecutorTool(BaseTool):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env={"PATH": "/usr/bin:/bin"},  # minimal env: no secrets leak
             )
         except Exception as e:
             return {"success": False, "error": f"Could not start sandbox process: {e}"}
@@ -129,24 +136,30 @@ class PythonExecutorTool(BaseTool):
             }
 
         out = stdout.decode(errors="replace")
+        # Cap captured output to prevent resource exhaustion via huge prints.
+        max_output = 200_000
+        if len(out) > max_output:
+            out = out[:max_output] + "\n...(output truncated)"
         try:
             result = json.loads(out.strip().splitlines()[-1])
             return result
         except (ValueError, IndexError):
             err = stderr.decode(errors="replace").strip() or f"Runner exited with {proc.returncode}"
-            return {"success": False, "output": out, "error": f"Sandbox runner error: {err}"}
+            return {"success": False, "output": out, "error": f"Sandbox runner error: {err[:2000]}"}
 
 
 # Standalone runner executed via `python -I -c`. Reads JSON {code, allowed} on
 # stdin, applies the same static policy check, then execs inside restricted
 # builtins. Prints a single JSON line {success, output|error} on stdout.
 _SANDBOX_RUNNER = r'''
-import ast, json, sys, builtins
+import ast, json, sys, builtins, resource
 from io import StringIO
 from contextlib import redirect_stdout, redirect_stderr
 
 BLOCKED = {"__import__","exec","eval","compile","open","input","breakpoint",
-           "exit","quit","globals","locals","vars","dir","help","memoryview"}
+           "exit","quit","globals","locals","vars","dir","help","memoryview",
+           "getattr","setattr","delattr","super","object","type",
+           "classmethod","staticmethod","property","wrapped"}
 
 def check(code, allowed):
     tree = ast.parse(code)
@@ -168,7 +181,21 @@ def check(code, allowed):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
            and node.func.id in BLOCKED:
             return "Use of '%s()' is not allowed in the sandbox" % node.func.id
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) \
+           and node.id in BLOCKED:
+            return "Reference to '%s' is not allowed in the sandbox" % node.id
     return None
+
+def apply_limits():
+    # Cap address space (~1 GB) and CPU time (4s, below the 5s hard kill).
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024,) * 2)
+    except Exception:
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (4, 5))
+    except Exception:
+        pass
 
 def main():
     payload = json.load(sys.stdin)
@@ -181,6 +208,7 @@ def main():
     if reason:
         print(json.dumps({"success": False, "error": "Sandbox policy violation: " + reason}))
         return
+    apply_limits()
     safe = {n: getattr(builtins, n) for n in dir(builtins)
             if n not in BLOCKED and not n.startswith("__")}
     real_import = builtins.__import__

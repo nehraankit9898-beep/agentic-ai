@@ -12,7 +12,7 @@ Every API error response follows:
 import uuid
 from typing import Any, Optional
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -60,3 +60,42 @@ def error_response(
     rid = getattr(request.state, "request_id", None) or request_id_var.get() or new_request_id()
     payload: dict[str, Any] = ErrorResponse.make(code, message, rid).model_dump()
     return JSONResponse(status_code=status_code, content=payload)
+
+
+def register_error_handlers(app: FastAPI) -> None:
+    """Install handlers so ALL API errors use the standard envelope.
+
+    Standard shape:
+        {"success": false, "error": {"code": ..., "message": ...}, "request_id": ...}
+    """
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        rid = request.headers.get("x-request-id") or new_request_id()
+        request.state.request_id = rid
+        token = request_id_var.set(rid)
+        try:
+            response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
+        response.headers["x-request-id"] = rid
+        return response
+
+    @app.exception_handler(AppError)
+    async def app_error_handler(request: Request, exc: AppError):
+        logger.warning(
+            "api_error",
+            extra={"event_data": {"code": exc.code, "status": exc.status_code}},
+        )
+        return error_response(request, exc.code, exc.detail, exc.status_code)
+
+    @app.exception_handler(HTTPException)
+    async def http_exc_handler(request: Request, exc: HTTPException):
+        return error_response(request, "HTTP_ERROR", str(exc.detail), exc.status_code)
+
+    @app.exception_handler(Exception)
+    async def unhandled_exc_handler(request: Request, exc: Exception):
+        logger.exception("unhandled_error")
+        # Do not leak internal exception details to clients in production.
+        message = str(exc) if getattr(request.app.state, "debug", True) else "Internal server error"
+        return error_response(request, "INTERNAL_ERROR", message, 500)
